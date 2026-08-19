@@ -1,0 +1,46 @@
+# ============================================================
+# 企业微信智能客服系统 - 配置文件模板
+# ============================================================
+# 使用方法：
+#   1. 复制本文件为 config.yaml
+#   2. 填入你自己的企业微信和 LLM 配置
+#   3. 启动服务即可
+# ============================================================
+
+# 企业微信配置（在企业微信管理后台获取）
+wecom:
+  corpid: "你的企业ID"              # 企业微信管理后台 → 我的企业 → 企业信息 → 企业ID
+  corpsecret: "你的应用Secret"       # 应用管理 → 自建应用 → Secret
+  agentid: 1000002                   # 应用管理 → 自建应用 → AgentId
+  token: "你的回调Token"             # 应用管理 → 自建应用 → 接收消息 → Token
+  encoding_aes_key: "你的EncodingAESKey"  # 应用管理 → 自建应用 → 接收消息 → EncodingAESKey
+
+# LLM 大模型配置（支持 OpenAI 兼容接口）
+llm:
+  provider: "openai"                 # openai / anthropic / qwen
+  api_url: "https://api.deepseek.com/v1/chat/completions"  # OpenAI兼容接口地址
+  api_key: "你的API Key"             # LLM 服务的 API Key
+  model: "deepseek-chat"             # 模型名称
+
+# Redis 配置（可选，不用 Redis 会自动降级到内存模式）
+redis:
+  url: "redis://localhost:6379/0"
+
+# 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# ============================================================
+# 快速开始：
+#   1. 注册企业微信：https://work.weixin.qq.com/
+#   2. 创建自建应用，获取 corpid / corpsecret / agentid
+#   3. 配置接收消息 API，获取 token / encoding_aes_key
+#   4. 注册 LLM 服务（推荐 DeepSeek），获取 api_key
+#   5. 填入本文件，重命名为 config.yaml
+#   6. 配置系统提示词：复制 prompts/system_prompt.example.txt 为
+#      prompts/system_prompt.txt，填入你的品牌信息
+#   7. 配置 FAQ：复制 knowledge/faq.example.json 为
+#      knowledge/faq.json，填入你的常见问题
+#   8. 运行：python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# ============================================================

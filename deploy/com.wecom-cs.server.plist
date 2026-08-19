@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wecom-cs.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/vm/tools/opt/python@3.10/3.10.20_3/libexec/bin/python3</string>
+        <string>-m</string>
+        <string>gunicorn</string>
+        <string>app.main:app</string>
+        <string>-c</string>
+        <string>deploy/gunicorn_config.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/dasean</string>
+        <key>PATH</key>
+        <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/vm/tools/opt/python@3.10/3.10.20_3/libexec/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs</string>
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>AfterInitialDemand</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/server.err.log</string>
+</dict>
+</plist>

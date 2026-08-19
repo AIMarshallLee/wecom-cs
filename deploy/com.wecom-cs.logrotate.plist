@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wecom-cs.logrotate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logrotate.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/rotate.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/rotate.err.log</string>
+</dict>
+</plist>

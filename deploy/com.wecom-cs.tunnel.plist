@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wecom-cs.tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/autossh</string>
+        <string>-M</string>
+        <string>0</string>
+        <string>-N</string>
+        <string>-R</string>
+        <string>8000:localhost:8000</string>
+        <string>-o</string>
+        <string>ServerAliveInterval=30</string>
+        <string>-o</string>
+        <string>ServerAliveCountMax=3</string>
+        <string>-o</string>
+        <string>ExitOnForwardFailure=yes</string>
+        <string>-o</string>
+        <string>StrictHostKeyChecking=no</string>
+        <string>root@120.79.227.94</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTOSSH_GATETIME</key>
+        <string>30</string>
+        <key>AUTOSSH_POLL</key>
+        <string>10</string>
+        <key>AUTOSSH_FIRST_POLL</key>
+        <string>5</string>
+        <key>HOME</key>
+        <string>/Users/dasean</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>AfterInitialDemand</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/tunnel.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/dasean/Library/Application Support/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a845ef8868ed2b3b328c7fd/wecom-cs/deploy/logs/tunnel.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,47 @@
+# 敏感配置文件（包含密钥，不要提交）
+config/config.yaml
+knowledge/faq.json
+prompts/system_prompt.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 数据文件
+data/
+*.db
+*.sqlite3
+
+# 日志
+logs/
+deploy/logs/
+*.log
+
+# 缓存
+.pytest_cache/
+.gunicorn/
+
+# 环境变量
+.env
+.env.*
+
+# 临时文件
+*.tmp
+*.bak
