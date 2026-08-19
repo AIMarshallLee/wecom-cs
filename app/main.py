@@ -113,6 +113,30 @@ try:
 except ImportError:
     _module_status["reply_controller"] = False
 
+try:
+    from app.user_profile_service import UserProfileService  # type: ignore
+    _module_status["user_profile_service"] = True
+except ImportError:
+    _module_status["user_profile_service"] = False
+
+try:
+    from app.adaptive_engine import AdaptiveEngine  # type: ignore
+    _module_status["adaptive_engine"] = True
+except ImportError:
+    _module_status["adaptive_engine"] = False
+
+try:
+    from app.moments_analyzer import MomentsAnalyzer  # type: ignore
+    _module_status["moments_analyzer"] = True
+except ImportError:
+    _module_status["moments_analyzer"] = False
+
+try:
+    from app.effect_tracker import EffectTracker  # type: ignore
+    _module_status["effect_tracker"] = True
+except ImportError:
+    _module_status["effect_tracker"] = False
+
 
 # ============================================================
 # 内置加解密工具（crypto 模块不可用时的降级实现）
@@ -313,6 +337,10 @@ class Application:
         self.knowledge_base = None
         self.session_manager = None
         self.reply_controller = None
+        self.profile_service = None
+        self.adaptive_engine = None
+        self.moments_analyzer = None
+        self.effect_tracker = None
         # 数据库
         self.db: Optional[SQLiteDB] = None
         # 会话上下文缓存（降级时使用内存字典）
@@ -426,6 +454,44 @@ class Application:
             except Exception as e:
                 logger.warning(f"reply_controller 模块初始化失败: {e}")
 
+        # 用户画像服务（SQLite 持久化）
+        if _module_status.get("user_profile_service") and self.db:
+            try:
+                self.profile_service = UserProfileService(self.db)
+                logger.info("user_profile_service 模块初始化成功")
+            except Exception as e:
+                logger.warning(f"user_profile_service 模块初始化失败: {e}")
+
+        # 话术自适应引擎（依赖 llm_engine 和 profile_service）
+        if _module_status.get("adaptive_engine") and self.llm_engine and self.profile_service:
+            try:
+                self.adaptive_engine = AdaptiveEngine(
+                    llm_engine=self.llm_engine,
+                    profile_service=self.profile_service,
+                )
+                logger.info("adaptive_engine 模块初始化成功")
+            except Exception as e:
+                logger.warning(f"adaptive_engine 模块初始化失败: {e}")
+
+        # 朋友圈画像分析器（依赖 llm_engine 和 profile_service）
+        if _module_status.get("moments_analyzer") and self.llm_engine and self.profile_service:
+            try:
+                self.moments_analyzer = MomentsAnalyzer(
+                    llm_engine=self.llm_engine,
+                    profile_service=self.profile_service,
+                )
+                logger.info("moments_analyzer 模块初始化成功")
+            except Exception as e:
+                logger.warning(f"moments_analyzer 模块初始化失败: {e}")
+
+        # 效果学习引擎（依赖 SQLite）
+        if _module_status.get("effect_tracker") and self.db:
+            try:
+                self.effect_tracker = EffectTracker(self.db)
+                logger.info("effect_tracker 模块初始化成功")
+            except Exception as e:
+                logger.warning(f"effect_tracker 模块初始化失败: {e}")
+
         # 回调处理器
         if _module_status.get("callback_handler"):
             try:
@@ -523,6 +589,22 @@ class Application:
             # a. 解析消息（格式化内容）
             content = format_message(content)
 
+            # a2. 效果跟踪：用当前消息评估上一条回复的效果
+            if self.effect_tracker and self.profile_service:
+                try:
+                    history = self.profile_service.get_interaction_history(user_id, limit=1)
+                    if history:
+                        last = history[0]
+                        self.effect_tracker.record_effect(
+                            user_id=user_id,
+                            followup_text=content,
+                            faq_id=last.get("faq_id", "") or "",
+                            reply_mode=last.get("reply_mode", "") or "",
+                            previous_question=last.get("user_message", "") or "",
+                        )
+                except Exception as e:
+                    logger.warning(f"效果跟踪记录失败: {e}")
+
             # b. 获取用户画像（用于个性化回复）
             user_profile = self._get_user_profile(user_id)
 
@@ -541,10 +623,20 @@ class Application:
                 raw_answer = faq_result.get("answer", "")
                 # FAQ confidence 是 0-1 小数，转成 0-100
                 confidence = int(faq_result.get("confidence", 0.95) * 100)
-                # 人性化处理 FAQ 回复
-                reply_text = self._humanize_faq_reply(
-                    raw_answer, user_profile, faq_result
-                )
+                # 自适应改写：老用户用 LLM 个性化改写，新用户走规则化人性化
+                if self.adaptive_engine and self.adaptive_engine.should_adapt(user_id):
+                    adapted = await self.adaptive_engine.adapt_reply(
+                        user_id, content, raw_answer,
+                        faq_result.get("question", "")
+                    )
+                    reply_text = adapted if adapted else self._humanize_faq_reply(
+                        raw_answer, user_profile, faq_result
+                    )
+                else:
+                    # 新用户或无画像数据，走规则化人性化
+                    reply_text = self._humanize_faq_reply(
+                        raw_answer, user_profile, faq_result
+                    )
                 mode = "faq"
                 logger.info(f"FAQ 匹配成功: confidence={confidence}")
             else:
@@ -582,6 +674,26 @@ class Application:
 
             # 记录到数据库
             self._record_message(user_id, content, reply_text, mode)
+
+            # 记录交互明细到 profile_service（用于千人千面分析）
+            if self.profile_service:
+                try:
+                    faq_id = faq_result.get("faq_id", "") if faq_result else ""
+                    self.profile_service.record_interaction_detail(
+                        user_id, content, reply_text, mode,
+                        str(faq_id) if faq_id else "",
+                        float(confidence) / 100.0,
+                    )
+                except Exception as e:
+                    logger.warning(f"记录交互明细失败: {e}")
+
+            # 每5条消息异步生成一次对话摘要（不阻塞回复）
+            if self.profile_service and user_profile:
+                msg_count = user_profile.get("message_count", 0)
+                if msg_count > 0 and msg_count % 5 == 0:
+                    asyncio.create_task(
+                        self._generate_conversation_summary(user_id)
+                    )
 
             logger.info(f"消息处理完成: user={user_id}, mode={mode}")
 
@@ -636,6 +748,9 @@ class Application:
     ) -> Dict:
         """调用 LLM 引擎（步骤 d）
 
+        使用 UserProfileService.get_profile_context() 构建富用户画像上下文，
+        让 LLM 能够基于用户历史对话摘要、转化阶段、朋友圈标签等个性化回复。
+
         Args:
             content: 用户消息
             context: 对话历史
@@ -643,9 +758,20 @@ class Application:
         """
         if self.llm_engine:
             try:
-                # 根据用户画像构建知识上下文
+                # 优先使用 profile_service 的富画像上下文
                 knowledge_context = ""
-                if user_profile:
+                user_id = user_profile.get("user_id", "") if user_profile else ""
+
+                if self.profile_service and user_id:
+                    try:
+                        rich_context = self.profile_service.get_profile_context(user_id)
+                        if rich_context:
+                            knowledge_context = rich_context + "\n"
+                    except Exception:
+                        pass
+
+                # 降级：手动构建简单上下文
+                if not knowledge_context and user_profile:
                     msg_count = user_profile.get("message_count", 0)
                     stage = user_profile.get("conversion_stage", "new")
                     topics = user_profile.get("asked_topics", [])
@@ -773,12 +899,20 @@ class Application:
     def _get_user_profile(self, user_id: str) -> dict:
         """获取用户画像
 
+        优先使用 SQLite 持久化的 UserProfileService，
+        降级到 SessionManager 的 Redis/内存画像。
+
         Args:
             user_id: 用户 ID
 
         Returns:
-            用户画像字典，包含消息计数、兴趣、转化阶段等
+            用户画像字典，包含消息计数、转化阶段、问过的话题等
         """
+        if self.profile_service:
+            try:
+                return self.profile_service.get_profile(user_id)
+            except Exception:
+                pass
         if self.session_manager:
             try:
                 return self.session_manager.get_user_profile(user_id)
@@ -797,11 +931,21 @@ class Application:
     ) -> None:
         """记录用户交互，更新画像
 
+        优先写入 SQLite 持久化画像，同时写入 SessionManager（保持会话上下文兼容）。
+
         Args:
             user_id: 用户 ID
             content: 用户消息内容
             faq_question: FAQ 匹配到的问题（可选）
         """
+        if self.profile_service:
+            try:
+                self.profile_service.record_interaction(
+                    user_id, content, faq_question
+                )
+            except Exception as e:
+                logger.warning(f"profile_service 记录交互失败: {e}")
+        # 同时写入 SessionManager（保持会话上下文兼容）
         if self.session_manager:
             try:
                 self.session_manager.record_interaction(
@@ -809,6 +953,58 @@ class Application:
                 )
             except Exception:
                 pass
+
+    async def _generate_conversation_summary(self, user_id: str) -> None:
+        """异步生成对话摘要
+
+        从 interaction_history 取最近10条交互记录，
+        调用 LLM 生成一段不超过100字的摘要，存入用户画像。
+        用于下次对话时 LLM 能快速了解这个用户的历史。
+
+        Args:
+            user_id: 用户 ID
+        """
+        if not self.profile_service or not self.llm_engine:
+            return
+
+        try:
+            # 取最近10条交互记录
+            history = self.profile_service.get_interaction_history(user_id, limit=10)
+            if len(history) < 3:
+                return  # 交互太少，不值得生成摘要
+
+            # 拼接对话文本
+            conversation_text = ""
+            for record in reversed(history):  # 从旧到新
+                user_msg = record.get("user_message", "")
+                bot_reply = record.get("bot_reply", "")
+                if user_msg:
+                    conversation_text += f"用户：{user_msg}\n"
+                if bot_reply:
+                    conversation_text += f"客服：{bot_reply}\n"
+
+            if not conversation_text.strip():
+                return
+
+            # 调用 LLM 生成摘要
+            prompt = (
+                "请用不超过100字总结以下对话的关键信息，"
+                "包括用户关注点、态度、是否提到购买意向等。"
+                "只输出摘要内容，不要加任何前缀：\n\n"
+                f"{conversation_text[:2000]}"
+            )
+
+            reply, _ = await self.llm_engine.generate_reply(
+                prompt, "", []
+            )
+
+            summary = reply.strip() if reply else ""
+            if summary and len(summary) <= 200:
+                self.profile_service.update_conversation_summary(user_id, summary)
+                logger.info(f"对话摘要已更新: user={user_id}, summary={summary[:50]}")
+
+        except Exception as e:
+            logger.warning(f"生成对话摘要失败: {e}")
 
     def _humanize_faq_reply(
         self,
@@ -1200,6 +1396,114 @@ async def wecom_callback(
 
     # 企业微信要求 5 秒内返回 success
     return PlainTextResponse("success")
+
+
+# ============================================================
+# 路由：千人千面 - 用户画像与朋友圈分析
+# ============================================================
+
+@app.get("/api/profile/{user_id}")
+async def get_user_profile_api(user_id: str, request: Request):
+    """获取用户画像"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if application.profile_service:
+        profile = application.profile_service.get_profile(user_id)
+        history = application.profile_service.get_interaction_history(user_id, limit=10)
+        return {"profile": profile, "recent_interactions": history}
+    return {"error": "profile_service not available"}
+
+
+@app.post("/api/profile/{user_id}/analyze_moments")
+async def analyze_moments_api(user_id: str, request: Request):
+    """分析用户朋友圈，提取画像标签
+
+    请求体（JSON）：
+        - moments_text: 朋友圈文本（直接提供时跳过 UI 读取）
+        - wechat_name: 微信昵称（用于 UI 自动化读取朋友圈）
+    """
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if not application.moments_analyzer:
+        return {"error": "moments_analyzer not available"}
+
+    body = await request.json()
+    moments_text = body.get("moments_text", "")
+    wechat_name = body.get("wechat_name", "")
+
+    tags = await application.moments_analyzer.analyze_user(
+        user_id, wechat_name=wechat_name, moments_text=moments_text
+    )
+    return {"user_id": user_id, "tags": tags}
+
+
+@app.get("/api/profiles")
+async def list_profiles_api(request: Request, limit: int = 50):
+    """获取所有用户画像列表"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if application.profile_service:
+        profiles = application.profile_service.get_all_profiles(limit=limit)
+        return {"profiles": profiles, "count": len(profiles)}
+    return {"profiles": [], "count": 0}
+
+
+@app.get("/api/effects/faq/{faq_id}")
+async def get_faq_effect_api(faq_id: str, request: Request):
+    """获取 FAQ 的效果分数"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if application.effect_tracker:
+        score = application.effect_tracker.get_faq_effect_score(faq_id)
+        return {"faq_id": faq_id, "effect": score}
+    return {"error": "effect_tracker not available"}
+
+
+@app.get("/api/effects/user/{user_id}")
+async def get_user_effect_api(user_id: str, request: Request):
+    """获取用户的效果摘要和推荐风格"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if application.effect_tracker:
+        summary = application.effect_tracker.get_user_effect_summary(user_id)
+        style = application.effect_tracker.suggest_style(user_id)
+        return {"user_id": user_id, "summary": summary, "suggested_style": style}
+    return {"error": "effect_tracker not available"}
+
+
+@app.get("/api/effects/low_performing_faqs")
+async def get_low_performing_faqs_api(request: Request):
+    """获取效果不佳的 FAQ 列表"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}, 503
+
+    if application.effect_tracker:
+        low = application.effect_tracker.get_low_performing_faqs()
+        return {"low_performing_faqs": low, "count": len(low)}
+    return {"error": "effect_tracker not available"}
 
 
 # ============================================================
