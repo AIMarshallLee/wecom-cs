@@ -170,6 +170,14 @@ class TestMessageProcessing(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls):
         cls.config = load_config(CONFIG_PATH)
         cls.config["db"] = {"path": ":memory:"}
+        # 测试环境：放开安全限制（Phase 3 + 全天 + 无延迟）
+        cls.config["safety"] = {
+            "enabled": True,
+            "work_hours": {"start": 0, "end": 24},
+            "rollout": {"phase": 3},
+            "human_simulate": {"min_delay": 0, "max_delay": 0, "typo_probability": 0},
+            "rate_limit": {"max_per_hour": 9999, "max_per_day": 9999, "min_interval_seconds": 0},
+        }
 
     def setUp(self):
         self.app = Application(self.config)
@@ -419,6 +427,14 @@ class TestAdminAPI(unittest.TestCase):
     def setUpClass(cls):
         cls.config = load_config(CONFIG_PATH)
         cls.config["db"] = {"path": ":memory:"}
+        # 测试环境：放开安全限制（Phase 3 + 全天 + 无延迟）
+        cls.config["safety"] = {
+            "enabled": True,
+            "work_hours": {"start": 0, "end": 24},
+            "rollout": {"phase": 3},
+            "human_simulate": {"min_delay": 0, "max_delay": 0, "typo_probability": 0},
+            "rate_limit": {"max_per_hour": 9999, "max_per_day": 9999, "min_interval_seconds": 0},
+        }
         # 使用临时 FAQ 文件，避免修改真实文件
         cls._temp_faq_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"

@@ -26,6 +26,64 @@ llm:
 redis:
   url: "redis://localhost:6379/0"
 
+# API 认证配置（保护 /api/* 和 /admin/* 端点）
+# 留空则不启用认证（仅开发环境推荐留空）
+api:
+  key: ""                            # 设置一个随机字符串作为 API Key，请求时通过 X-API-Key 头传入
+
+# 回复策略配置
+reply:
+  auto_reply_threshold: 80           # 自动回复的置信度阈值（0-100，低于此值走 suggest 模式）
+  max_context_messages: 10           # 会话上下文最大消息数
+  session_timeout_minutes: 30        # 会话超时时间（分钟）
+
+# 文件路径配置
+paths:
+  knowledge_base: "knowledge"        # 知识库目录
+  faq_file: "knowledge/faq.json"     # FAQ 数据文件
+  templates_dir: "knowledge/templates"  # 回复模板目录
+
+# 数据库配置
+db:
+  path: "data/wecom_cs.db"           # SQLite 数据库路径（":memory:" 为内存模式）
+
+# ============================================================
+# 安全合规配置（反封措施，生产环境必须启用）
+# ============================================================
+safety:
+  enabled: true                      # 是否启用安全守卫（强烈建议 true）
+
+  # 速率限制（单用户）
+  rate_limit:
+    max_per_hour: 20                 # 每小时最多回复条数
+    max_per_day: 100                 # 每天最多回复条数
+    min_interval_seconds: 5          # 两条回复之间最小间隔（秒）
+
+  # 工作时间限制（非工作时间不自动回复）
+  work_hours:
+    start: 9                         # 开始时间（24小时制，9 = 09:00）
+    end: 21                          # 结束时间（21 = 21:00）
+
+  # 人工行为模拟
+  human_simulate:
+    min_delay: 3                    # 发送前最小延迟（秒）
+    max_delay: 15                   # 发送前最大延迟（秒）
+    typo_probability: 0.1            # 故意打错字概率（0-1）
+
+  # 内容过滤
+  content_filter:
+    block_links: true                # 过滤回复中的 URL 链接
+    block_payment: true              # 过滤支付相关内容
+    block_drainage: true             # 过滤引流话术（加微信、私信等）
+    max_length: 500                  # 回复最大字数
+
+  # 渐进式上线
+  rollout:
+    phase: 1                         # 1=全部人工确认, 2=FAQ>90%自动, 3=FAQ+咨询>75%自动
+
+  # 紧急停止（一键关闭所有自动回复）
+  emergency_stop: false              # true = 启动时即处于紧急停止状态
+
 # 服务配置
 server:
   host: "0.0.0.0"
@@ -43,4 +101,10 @@ server:
 #   7. 配置 FAQ：复制 knowledge/faq.example.json 为
 #      knowledge/faq.json，填入你的常见问题
 #   8. 运行：python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+#
+# 安全合规建议：
+#   - 首次上线务必设 safety.rollout.phase = 1（全部人工确认）
+#   - 运行稳定后切到 phase = 2（FAQ 自动），再逐步到 phase = 3
+#   - emergency_stop 可通过 API 随时触发：POST /api/safety/emergency_stop
+#   - 切换阶段：POST /api/safety/phase/2
 # ============================================================

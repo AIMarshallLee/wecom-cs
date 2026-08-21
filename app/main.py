@@ -137,6 +137,12 @@ try:
 except ImportError:
     _module_status["effect_tracker"] = False
 
+try:
+    from app.safety import SafetyGuard
+    _module_status["safety_guard"] = True
+except ImportError:
+    _module_status["safety_guard"] = False
+
 
 # ============================================================
 # 内置加解密工具（crypto 模块不可用时的降级实现）
@@ -341,12 +347,17 @@ class Application:
         self.adaptive_engine = None
         self.moments_analyzer = None
         self.effect_tracker = None
+        self.safety_guard = None
         # 数据库
         self.db: Optional[SQLiteDB] = None
         # 会话上下文缓存（降级时使用内存字典）
         self._sessions: Dict[str, List[Dict]] = {}
         # FAQ 数据缓存（降级匹配使用）
         self._faq_data: List[Dict] = []
+        # 消息去重缓存（防止企微 5 秒重试导致重复回复）
+        self._processed_msg_ids: Dict[str, float] = {}
+        # 去重缓存保留时间（秒）
+        self._dedup_ttl: int = 300
 
         self._init_db()
         self._init_modules()
@@ -504,6 +515,15 @@ class Application:
             except Exception as e:
                 logger.warning(f"callback_handler 模块初始化失败: {e}")
 
+        # 安全合规守卫（速率限制/工作时间/人工模拟/内容过滤/紧急停止）
+        if _module_status.get("safety_guard"):
+            try:
+                safety_cfg = self.config.get("safety", {})
+                self.safety_guard = SafetyGuard(safety_cfg)
+                logger.info("safety_guard 模块初始化成功")
+            except Exception as e:
+                logger.warning(f"safety_guard 模块初始化失败: {e}")
+
         # 加载 FAQ 数据（降级匹配使用）
         self._load_faq_data()
 
@@ -581,10 +601,42 @@ class Application:
             user_id = message.get("user_id", "")
             content = message.get("content", "")
             msg_type = message.get("msg_type", "text")
+            msg_id = message.get("msg_id", "")
+
+            # 消息去重：企微会在 5 秒内重试同一消息最多 3 次
+            if msg_id:
+                import time as _time
+                now = _time.time()
+                # 清理过期记录
+                expired = [k for k, t in self._processed_msg_ids.items() if now - t > self._dedup_ttl]
+                for k in expired:
+                    del self._processed_msg_ids[k]
+                # 检查是否已处理过
+                if msg_id in self._processed_msg_ids:
+                    logger.info(f"消息已处理过，跳过: msg_id={msg_id}")
+                    return
+                self._processed_msg_ids[msg_id] = now
+
             logger.info(
                 f"开始处理消息: user={user_id}, type={msg_type}, "
                 f"content={content[:50]}"
             )
+
+            # 非文本消息处理：图片/语音/链接等
+            if msg_type != "text" or not content.strip():
+                logger.info(f"非文本消息，跳过自动处理: type={msg_type}")
+                # 非文本消息直接走人工
+                if self.wecom_client:
+                    try:
+                        await self.wecom_client.send_text(
+                            user_id,
+                            "收到你的消息了，不过我目前只能处理文字，"
+                            "用文字描述一下你的问题呗~"
+                        )
+                    except Exception:
+                        pass
+                self._record_message(user_id, content or f"[{msg_type}]", "", "human")
+                return
 
             # a. 解析消息（格式化内容）
             content = format_message(content)
@@ -595,13 +647,20 @@ class Application:
                     history = self.profile_service.get_interaction_history(user_id, limit=1)
                     if history:
                         last = history[0]
-                        self.effect_tracker.record_effect(
+                        effect_type = self.effect_tracker.record_effect(
                             user_id=user_id,
                             followup_text=content,
                             faq_id=last.get("faq_id", "") or "",
                             reply_mode=last.get("reply_mode", "") or "",
                             previous_question=last.get("user_message", "") or "",
                         )
+                        # 效果反馈循环：每10条消息自动更新一次偏好风格
+                        current_count = self.profile_service.get_profile(user_id).get("message_count", 0)
+                        if current_count > 0 and current_count % 10 == 0:
+                            suggested_style = self.effect_tracker.suggest_style(user_id)
+                            if suggested_style:
+                                self.profile_service.update_preferred_style(user_id, suggested_style)
+                                logger.info(f"偏好风格自动更新: user={user_id}, style={suggested_style}")
                 except Exception as e:
                     logger.warning(f"效果跟踪记录失败: {e}")
 
@@ -627,7 +686,8 @@ class Application:
                 if self.adaptive_engine and self.adaptive_engine.should_adapt(user_id):
                     adapted = await self.adaptive_engine.adapt_reply(
                         user_id, content, raw_answer,
-                        faq_result.get("question", "")
+                        faq_result.get("question", ""),
+                        context=context,
                     )
                     reply_text = adapted if adapted else self._humanize_faq_reply(
                         raw_answer, user_profile, faq_result
@@ -656,12 +716,54 @@ class Application:
                 reply_text = decision.get("reply", reply_text)
                 mode = "human"
                 logger.info("决策结果: 转人工客服")
+            elif decision.get("mode") == "suggest":
+                # suggest 模式：置信度中等，不自动发送原文，发一句缓冲话
+                suggested = decision.get("reply", reply_text)
+                reply_text = "我想想怎么回答你哈，稍等一下~"
+                mode = "suggest"
+                logger.info(
+                    f"决策结果: 建议回复(不自动发出), 建议内容: {suggested[:80]}"
+                )
             else:
                 reply_text = decision.get("reply", reply_text)
                 logger.info("决策结果: 自动回复")
 
-            # g. 发送回复（通过 WeComClient）
-            await self._send_reply(user_id, reply_text)
+            # g. 安全合规检查 + 发送回复
+            if self.safety_guard and mode != "human":
+                # 安全检查（非转人工的回复都需要过安全守卫）
+                is_faq_match = mode == "faq"
+                safety_result = self.safety_guard.pre_send_check(
+                    user_id=user_id,
+                    reply_text=reply_text,
+                    confidence=float(confidence) / 100.0,
+                    is_faq=is_faq_match,
+                )
+
+                if not safety_result["allowed"]:
+                    # 被安全守卫拦截（速率限制/非工作时间/紧急停止）
+                    logger.info(
+                        f"回复被安全守卫拦截: user={user_id}, "
+                        f"reason={safety_result['reason']}"
+                    )
+                    if safety_result["mode"] == "block":
+                        # 完全拦截，不发送（非工作时间或紧急停止）
+                        mode = "blocked"
+                        reply_text = ""
+                    else:
+                        # suggest 模式：发送缓冲话
+                        reply_text = safety_result["filtered_text"]
+                        mode = "suggest"
+                else:
+                    # 通过安全检查，使用过滤后的文本，保留原始 mode
+                    reply_text = safety_result["filtered_text"]
+                    if safety_result["warnings"]:
+                        logger.info(
+                            f"内容过滤警告: {safety_result['warnings']}"
+                        )
+
+            # 发送回复（通过 WeComClient）
+            if reply_text:
+                await self._send_reply(user_id, reply_text)
 
             # h. 记录会话上下文
             await self._record_session(user_id, content, reply_text, mode)
@@ -699,6 +801,15 @@ class Application:
 
         except Exception as e:
             logger.error(f"消息处理异常: {e}", exc_info=True)
+            # 异常时给用户一个反馈，避免被无视
+            try:
+                if self.wecom_client and user_id:
+                    await self.wecom_client.send_text(
+                        user_id,
+                        "不好意思刚刚出了点小状况，你再发一次试试？"
+                    )
+            except Exception:
+                pass
 
     # ----------------------------------------------------------
     # 流程子步骤（含降级逻辑）
@@ -855,16 +966,33 @@ class Application:
         }
 
     async def _send_reply(self, user_id: str, reply_text: str) -> None:
-        """发送回复（步骤 f）"""
+        """发送回复（步骤 f）
+
+        集成安全合规：
+        - 人工模拟延迟（3-15s 随机等待，模拟人工打字）
+        - 发送后记录速率限制计数
+        """
+        # 人工模拟延迟（让回复不那么"机器人"）
+        if self.safety_guard:
+            delay = self.safety_guard.get_send_delay()
+            logger.info(f"人工模拟延迟: {delay:.1f}s")
+            await asyncio.sleep(delay)
+
         if self.wecom_client:
             try:
                 await self.wecom_client.send_text(user_id, reply_text)
                 logger.info(f"已通过 WeComClient 发送回复: user={user_id}")
+                # 记录发送（用于速率限制计数）
+                if self.safety_guard:
+                    self.safety_guard.post_send(user_id)
                 return
             except Exception as e:
                 logger.warning(f"WeComClient 发送失败: {e}")
         # 降级：仅记录日志
         logger.info(f"[降级] 回复: user={user_id}, reply={reply_text[:80]}")
+        # 降级模式下也记录发送
+        if self.safety_guard:
+            self.safety_guard.post_send(user_id)
 
     async def _record_session(
         self, user_id: str, content: str, reply: str, mode: str
@@ -994,12 +1122,19 @@ class Application:
                 f"{conversation_text[:2000]}"
             )
 
-            reply, _ = await self.llm_engine.generate_reply(
+            reply, conf = await self.llm_engine.generate_reply(
                 prompt, "", []
             )
 
             summary = reply.strip() if reply else ""
-            if summary and len(summary) <= 200:
+            # 防止 LLM 降级回复被误存为摘要
+            is_fallback = (
+                not summary
+                or "答不上来" in summary
+                or "稍等" in summary and len(summary) < 30
+                or conf < 0.1
+            )
+            if not is_fallback and len(summary) <= 200:
                 self.profile_service.update_conversation_summary(user_id, summary)
                 logger.info(f"对话摘要已更新: user={user_id}, summary={summary[:50]}")
 
@@ -1046,6 +1181,9 @@ class Application:
                 greeting = f"又来啦~ 上次你问的{last_topic}，"
             else:
                 greeting = "嘿~ "
+        else:
+            # msg_count 1-2：简单招呼
+            greeting = "嘿~ "
 
         # --- 结尾：根据转化阶段决定引导话术 ---
         ending = ""
@@ -1249,18 +1387,73 @@ app = FastAPI(
 
 
 # ============================================================
+# API 认证中间件
+# ============================================================
+
+@app.middleware("http")
+async def api_auth_middleware(request: Request, call_next):
+    """API 认证中间件
+
+    对 /api/* 和 /admin/* 路径要求 X-API-Key 头认证。
+    如果 config 中没有配置 api.key，则跳过认证（开发模式）。
+    /health、/wecom/callback、/docs 等路径不受限制。
+    """
+    path = request.url.path
+
+    # 不需要认证的路径
+    public_prefixes = ("/health", "/wecom/callback", "/docs", "/openapi", "/redoc", "/favicon")
+    if any(path.startswith(p) for p in public_prefixes):
+        return await call_next(request)
+
+    # 需要认证的路径
+    protected_prefixes = ("/api", "/admin")
+    if not any(path.startswith(p) for p in protected_prefixes):
+        return await call_next(request)
+
+    # 获取配置的 API Key
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application:
+        api_key = application.config.get("api", {}).get("key", "")
+        if api_key:
+            # 已配置 API Key，必须验证
+            provided_key = request.headers.get("X-API-Key", "")
+            if provided_key != api_key:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "Unauthorized", "message": "Missing or invalid API key"},
+                )
+
+    return await call_next(request)
+
+
+# ============================================================
 # 路由：健康检查
 # ============================================================
 
 @app.get("/health")
 async def health_check():
     """健康检查"""
+    application: Optional[Application] = getattr(
+        app.state, "application", None
+    )
+    safety_info = {}
+    if application and application.safety_guard:
+        sg = application.safety_guard
+        safety_info = {
+            "emergency_stop": sg.is_emergency_stopped(),
+            "phase": sg.get_phase(),
+            "is_work_hours": sg.is_work_hours(),
+        }
     return {
         "status": "ok",
         "service": "wecom-cs",
         "version": "1.0.0",
         "modules": _module_status,
         "crypto_lib": HAS_CRYPTO_LIB,
+        "safety": safety_info,
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -1303,10 +1496,10 @@ async def wecom_verify(
                 logger.info("URL验证成功（crypto模块）")
                 return PlainTextResponse(reply)
             else:
-                logger.warning(f"URL验证失败（crypto模块）: ret={ret}")
-                return PlainTextResponse("Verification failed", status_code=403)
+                logger.warning(f"URL验证失败（crypto模块）: ret={ret}，降级到内置验证")
+                # 不直接返回 403，降级到内置签名验证
         except Exception as e:
-            logger.warning(f"crypto 模块 VerifyURL 异常: {e}")
+            logger.warning(f"crypto 模块 VerifyURL 异常: {e}，降级到内置验证")
 
     # 降级：内置签名验证
     expected_sig = verify_signature(token, timestamp, nonce, echostr)
@@ -1504,6 +1697,90 @@ async def get_low_performing_faqs_api(request: Request):
         low = application.effect_tracker.get_low_performing_faqs()
         return {"low_performing_faqs": low, "count": len(low)}
     return {"error": "effect_tracker not available"}
+
+
+# ============================================================
+# 安全合规 API 端点
+# ============================================================
+
+@app.get("/api/safety/status")
+async def safety_status(request: Request):
+    """获取安全合规状态
+
+    返回当前安全守卫的运行状态，包括：
+    - 紧急停止状态
+    - 当前上线阶段
+    - 是否在工作时间内
+    """
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}
+    if not application.safety_guard:
+        return {"error": "safety_guard not available"}
+    sg = application.safety_guard
+    return {
+        "emergency_stop": sg.is_emergency_stopped(),
+        "phase": sg.get_phase(),
+        "is_work_hours": sg.is_work_hours(),
+        "rate_limit": sg.config.get("rate_limit", {}),
+        "work_hours": sg.config.get("work_hours", {}),
+    }
+
+
+@app.post("/api/safety/emergency_stop")
+async def trigger_emergency_stop(request: Request):
+    """触发紧急停止
+
+    一键关闭所有自动回复，只接收消息不自动回复。
+    需要手动调用 /api/safety/resume 恢复。
+    """
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}
+    if not application.safety_guard:
+        return {"error": "safety_guard not available"}
+    application.safety_guard.emergency_stop()
+    return {"status": "stopped", "message": "紧急停止已触发，自动回复已暂停"}
+
+
+@app.post("/api/safety/resume")
+async def resume_from_emergency_stop(request: Request):
+    """解除紧急停止"""
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}
+    if not application.safety_guard:
+        return {"error": "safety_guard not available"}
+    application.safety_guard.resume()
+    return {"status": "resumed", "message": "紧急停止已解除，自动回复恢复运行"}
+
+
+@app.post("/api/safety/phase/{phase}")
+async def set_rollout_phase(phase: int, request: Request):
+    """切换上线阶段
+
+    Phase 1: 所有回复走 suggest 模式（AI 预填，人工确认）
+    Phase 2: FAQ >90% 自动回复
+    Phase 3: FAQ + 咨询 >75% 自动回复
+    """
+    application: Optional[Application] = getattr(
+        request.app.state, "application", None
+    )
+    if application is None:
+        return {"error": "Service not ready"}
+    if not application.safety_guard:
+        return {"error": "safety_guard not available"}
+    if phase not in (1, 2, 3):
+        return {"error": "phase must be 1, 2, or 3"}
+    application.safety_guard.config["rollout"]["phase"] = phase
+    logger.warning(f"上线阶段已切换为: Phase {phase}")
+    return {"status": "ok", "phase": phase}
 
 
 # ============================================================

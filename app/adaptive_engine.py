@@ -101,6 +101,7 @@ class AdaptiveEngine:
         faq_answer: str,
         faq_question: str,
         profile: dict,
+        context: list = None,
     ) -> str:
         """构建改写指令 prompt
 
@@ -111,6 +112,7 @@ class AdaptiveEngine:
             faq_answer: FAQ 原始答案
             faq_question: FAQ 匹配到的问题
             profile: 用户画像
+            context: 对话历史（可选）
 
         Returns:
             改写指令 prompt 字符串
@@ -145,10 +147,30 @@ class AdaptiveEngine:
 
         profile_text = "\n".join(parts)
 
+        # 最近对话上下文
+        context_text = ""
+        if context:
+            recent = context[-4:]  # 最近2轮（4条消息）
+            context_lines = []
+            for msg in recent:
+                role = "用户" if msg.get("role") == "user" else "客服"
+                content = msg.get("content", "")[:100]
+                if content:
+                    context_lines.append(f"{role}：{content}")
+            if context_lines:
+                context_text = "\n".join(context_lines)
+
         prompt = (
             "你是一个客服助手，需要根据用户画像改写下面的 FAQ 回复。\n\n"
             "【用户画像】\n"
             f"{profile_text}\n\n"
+        )
+        if context_text:
+            prompt += (
+                "【最近对话】\n"
+                f"{context_text}\n\n"
+            )
+        prompt += (
             "【用户当前消息】\n"
             f"{user_message}\n\n"
             "【FAQ 原始答案】\n"
@@ -170,6 +192,7 @@ class AdaptiveEngine:
         user_message: str,
         faq_answer: str,
         faq_question: str = "",
+        context: list = None,
     ) -> str:
         """根据用户画像改写 FAQ 回复
 
@@ -180,6 +203,7 @@ class AdaptiveEngine:
             user_message: 用户原始消息
             faq_answer: FAQ 原始答案
             faq_question: FAQ 匹配到的问题
+            context: 对话历史（可选，让 LLM 知道刚才聊了什么）
 
         Returns:
             改写后的回复文本（失败时返回原始答案）
@@ -190,7 +214,7 @@ class AdaptiveEngine:
         try:
             profile = self.profile_service.get_profile(user_id)
             prompt = self._build_adapt_prompt(
-                user_message, faq_answer, faq_question, profile
+                user_message, faq_answer, faq_question, profile, context
             )
 
             # 调用 LLM 改写
