@@ -1,3 +1,15 @@
+# wecom-cs — WeCom (Enterprise WeChat) Intelligent Customer Service
+
+[中文](#企业微信智能客服系统) | English
+
+Open-source customer service bot for WeCom (企业微信): FAQ exact/fuzzy matching (95%+ hit rate) + LLM fallback, user profiling with conversion-stage tracking (new → converted), sensitive-topic human handoff, hot-reloadable FAQ, Redis-backed session management.
+
+**Why it's different**: dual-engine design keeps factual answers deterministic (FAQ) while the LLM handles only the long tail — support teams keep control of what gets promised. Built and battle-tested in production by [Kunlun Growth](https://kunlungrowth.com), an enterprise AI enablement firm in Hangzhou.
+
+Quick start, architecture and API docs below (Chinese). Contributions welcome.
+
+---
+
 # 企业微信智能客服系统
 
 基于企业微信 API + LLM 大模型的智能客服系统。FAQ 精准匹配 + LLM 智能回复，支持用户画像、转化引导、敏感词转人工。
